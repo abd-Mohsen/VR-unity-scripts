@@ -20,7 +20,7 @@ public class LoadModels : MonoBehaviour
     private HttpListener httpListener; // HTTP server
     private Thread serverThread; // Thread for the server
     private Vector3 movementDirection = Vector3.zero; // Direction to move the object
-    public float moveSpeed = 1f; // Movement speed
+    public float moveSpeed = 0.5f; // Movement speed
 
     private Dictionary<GameObject, string> modelIdLookup = new Dictionary<GameObject, string>();
 
@@ -47,6 +47,7 @@ public class LoadModels : MonoBehaviour
 
     void Update()
     {
+        HandleMouseClick();
         HandleKeyboardClick();
 
         if (selectedObject != null)
@@ -126,6 +127,40 @@ public class LoadModels : MonoBehaviour
         context.Response.OutputStream.Write(buffer, 0, buffer.Length);
         context.Response.OutputStream.Close();
     }
+
+    private void HandleMouseClick()
+    {
+        if (Input.GetMouseButtonDown(0))
+        {
+            Ray ray = Camera.main.ScreenPointToRay(Input.mousePosition);
+            if (Physics.Raycast(ray, out RaycastHit hit))
+            {
+                GameObject clickedObject = hit.transform.gameObject;
+                Debug.Log("Ray hit: " + clickedObject.name);
+
+                // Walk up to find the associated model in the lookup
+                Transform current = clickedObject.transform;
+                while (current != null)
+                {
+                    if (modelIdLookup.ContainsKey(current.gameObject))
+                    {
+                        selectedObject = current.gameObject;
+                        Debug.Log("Selected new object: " + selectedObject.name);
+                        return;
+                    }
+                    current = current.parent;
+                }
+
+                Debug.Log("Clicked object not in model lookup.");
+            }
+            else
+            {
+                Debug.Log("Raycast hit nothing.");
+            }
+        }
+    }
+
+
 
     async private void HandleKeyboardClick()
     {
@@ -262,6 +297,21 @@ public class LoadModels : MonoBehaviour
         {
             model.transform.SetParent(this.transform); // Ensure parenting
             model.transform.localPosition = Vector3.zero;
+            if (model.GetComponent<Collider>() == null)
+            {
+                var renderer = model.GetComponentInChildren<Renderer>();
+                if (renderer != null)
+                {
+                    Bounds bounds = renderer.bounds;
+                    BoxCollider collider = model.AddComponent<BoxCollider>();
+                    collider.center = model.transform.InverseTransformPoint(bounds.center);
+                    collider.size = bounds.size;
+                }
+                else
+                {
+                    model.AddComponent<BoxCollider>(); // fallback
+                }
+            }
         }
         return (model, modelInfo);
     }
