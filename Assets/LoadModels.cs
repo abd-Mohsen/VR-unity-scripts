@@ -7,8 +7,11 @@ using System.Threading.Tasks;
 using UnityEngine;
 using UnityEngine.Networking;
 using GLTFast;
+using System.Text.Json;
 using System.Linq;
-
+using Newtonsoft.Json;
+//using SimpleJSON;
+//"com.unity.nuget.newtonsoft-json": "3.0.2",
 public class LoadModels : MonoBehaviour
 {
     public string modelsFolderPath = "C:\\Users\\ABD\\Desktop\\models";
@@ -19,10 +22,10 @@ public class LoadModels : MonoBehaviour
     private Vector3 movementDirection = Vector3.zero; // Direction to move the object
     public float moveSpeed = 1f; // Movement speed
 
+    private Dictionary<GameObject, string> modelIdLookup = new Dictionary<GameObject, string>();
+
     async void Start()
     {
-        // Load the models and wait until they are fully loaded
-        //await LoadAllModels();
         await LoadModelsFromServer();
 
         // Now that the models are loaded, check for the first one to control
@@ -37,57 +40,49 @@ public class LoadModels : MonoBehaviour
             return;
         }
 
-        // Start the HTTP server to handle movement commands
         StartServer();
     }
 
     void Update()
     {
-        // Move the object based on the movement direction
         if (selectedObject != null)
         {
             selectedObject.transform.Translate(movementDirection * moveSpeed);
         }
-
-        // Reset the movement direction after moving
         movementDirection = Vector3.zero;
     }
 
     private void StartServer()
     {
         httpListener = new HttpListener();
-        httpListener.Prefixes.Add("http://127.0.0.1:9000/"); // Add the prefix for the server
+        httpListener.Prefixes.Add("http://127.0.0.1:9000/");
         httpListener.Start();
 
-        // Start the server in a separate thread
         serverThread = new Thread(() =>
         {
             while (httpListener.IsListening)
             {
                 try
                 {
-                    // Wait for an incoming request
                     var context = httpListener.GetContext();
                     HandleRequest(context);
                 }
                 catch (Exception ex)
                 {
-                    //Debug.LogError($"Server error: {ex.Message}");
+                    Debug.LogError($"Server error: {ex.Message}");
                 }
             }
         });
         serverThread.IsBackground = true;
         serverThread.Start();
-
         Debug.Log("HTTP server started on http://127.0.0.1:9000/");
     }
 
-    private void HandleRequest(HttpListenerContext context)
+    async private void HandleRequest(HttpListenerContext context)
     {
         // Parse the command from the URL
         string command = context.Request.RawUrl?.Trim('/').ToLower();
 
-        // Handle the movement commands
         switch (command)
         {
             case "left":
@@ -106,6 +101,7 @@ public class LoadModels : MonoBehaviour
                 Debug.LogWarning($"Unknown command: {command}");
                 break;
         }
+        //await UpdateModelTransform(selectedObject);
 
         // Respond to the client
         string responseString = $"Command '{command}' executed!";
@@ -130,116 +126,76 @@ public class LoadModels : MonoBehaviour
         }
     }
 
-    // Asynchronously load all GLB models from the folder
-    private async Task LoadAllModels()
-    {
-        // Check if folder exists
-        if (!Directory.Exists(modelsFolderPath))
-        {
-            Debug.LogError($"The folder '{modelsFolderPath}' does not exist!");
-            return;
-        }
-
-        // Get all .glb files in the folder
-        string[] modelFiles = Directory.GetFiles(modelsFolderPath, "*.glb");
-
-        if (modelFiles.Length == 0)
-        {
-            Debug.LogWarning("No .glb files found in the folder!");
-            return;
-        }
-
-        // Position offset for placing models
-        Vector3 positionOffset = Vector3.zero;
-        float spacing = 2.0f; // Space between models
-
-        // Use a list to track tasks
-        List<Task<GameObject>> loadTasks = new List<Task<GameObject>>();
-
-        // Start loading all models in parallel
-        foreach (string modelFile in modelFiles)
-        {
-            loadTasks.Add(LoadGLBModelAsync(modelFile));
-        }
-
-        // Wait for all models to finish loading
-        GameObject[] loadedModels = await Task.WhenAll(loadTasks);
-
-        // Position the models after they've all loaded
-        foreach (GameObject model in loadedModels)
-        {
-            if (model != null)
-            {
-                model.transform.position = positionOffset;
-                positionOffset += new Vector3(spacing, 0, 0);
-                model.transform.SetParent(transform); // Set model as a child of the parent object
-            }
-        }
-
-        Debug.Log("All models loaded!");
-    }
-
-    // Helper method to load individual GLB models asynchronously
-    private async Task<GameObject> LoadGLBModelAsync(string glbFilePath)
-    {
-        var gltf = new GltfImport();
-        bool success = await gltf.Load(glbFilePath);
-
-        if (success)
-        {
-            GameObject model = new GameObject(Path.GetFileNameWithoutExtension(glbFilePath));
-            await gltf.InstantiateMainSceneAsync(model.transform);
-            return model;
-        }
-        return null;
-    }
-
     ///////////////
     
     [Header("Server Settings")]
-    [SerializeField] private string serverUrl = "http://127.0.0.1:8000";
-    [SerializeField] private string modelsEndpoint = "/api/models/search";
-
-    [Header("Display Settings")]
-    [SerializeField] private float spacing = 2.0f;
+    private string serverUrl = "http://127.0.0.1:8000";
+    private string modelsEndpoint = "/api/models/search";
 
     private async Task LoadModelsFromServer()
     {
         List<ModelInfo> modelList = await FetchModelList();
-        
+       
         if (modelList == null || modelList.Count == 0)
         {
             Debug.LogWarning("No models found on the server!");
             return;
         }
 
-        // Position offset for placing models
-        Vector3 positionOffset = Vector3.zero;
+        List<Task<(GameObject, ModelInfo)>> loadTasks = new List<Task<(GameObject, ModelInfo)>>();
 
-        // Use a list to track tasks
-        List<Task<GameObject>> loadTasks = new List<Task<GameObject>>();
-
-        // Start loading all models in parallel
         foreach (ModelInfo modelInfo in modelList)
         {
-            loadTasks.Add(LoadGLBModelFromUrlAsync(modelInfo.modelPath, modelInfo.name));
+            loadTasks.Add(LoadModelWithInfo(modelInfo));
         }
 
-        // Wait for all models to finish loading
-        GameObject[] loadedModels = await Task.WhenAll(loadTasks);
+        var loadedModels = await Task.WhenAll(loadTasks);
 
-        // Position the models after they've all loaded
-        foreach (GameObject model in loadedModels)
+        foreach (var (model, modelInfo) in loadedModels)
         {
             if (model != null)
             {
-                model.transform.position = positionOffset;
-                positionOffset += new Vector3(spacing, 0, 0);
-                model.transform.SetParent(transform);
+                modelIdLookup[model] = modelInfo.id;
+                Debug.Log(modelInfo.TooString());
+                Matrix4x4 transformMatrix = ParseTransform(modelInfo.transform);
+
+                // Set the model transform matrix
+                Transform modelTransform = model.transform;
+                modelTransform.position = transformMatrix.GetPosition();
+                modelTransform.rotation = transformMatrix.rotation;
+                modelTransform.localScale = transformMatrix.lossyScale;
             }
         }
 
-        Debug.Log($"Successfully loaded models from server!");
+        Debug.Log($"Successfully loaded {loadedModels.Length} models from server!");
+    }
+
+    private async Task<(GameObject, ModelInfo)> LoadModelWithInfo(ModelInfo modelInfo)
+    {
+        GameObject model = await LoadGLBModelFromUrlAsync(modelInfo.modelPath, modelInfo.name);
+        return (model, modelInfo);
+    }
+
+    private Matrix4x4 ParseTransform(float[][] matrixData)
+    {
+        if (matrixData == null)
+        {
+            Debug.LogError("Matrix data is null! Returning identity matrix.");
+            return Matrix4x4.identity;
+        }
+
+        if (matrixData.Length != 4 || matrixData.Any(row => row == null || row.Length != 4))
+        {
+            Debug.LogError("Invalid matrix dimensions! Returning identity matrix.");
+            return Matrix4x4.identity;
+        }
+
+        return new Matrix4x4(
+            new Vector4(matrixData[0][0], matrixData[0][1], matrixData[0][2], matrixData[0][3]),
+            new Vector4(matrixData[1][0], matrixData[1][1], matrixData[1][2], matrixData[1][3]),
+            new Vector4(matrixData[2][0], matrixData[2][1], matrixData[2][2], matrixData[2][3]),
+            new Vector4(matrixData[3][0], matrixData[3][1], matrixData[3][2], matrixData[3][3])
+        );
     }
 
     private async Task<List<ModelInfo>> FetchModelList()
@@ -256,52 +212,45 @@ public class LoadModels : MonoBehaviour
 
             if (request.result != UnityWebRequest.Result.Success)
             {
-                Debug.LogError($"Failed to fetch model list: {request.error}");
+                Debug.LogError($"Failed to fetch models: {request.error}");
                 return null;
             }
 
-            // Fix 1: Parse the JSON array directly into a List<ModelInfo>
-            string jsonResponse = request.downloadHandler.text;
-            return ParseModelList(jsonResponse);
+            try
+            {
+                var json = request.downloadHandler.text;
+                Debug.Log($"Received JSON: {json}"); // Verify raw JSON
+                
+                var models = JsonConvert.DeserializeObject<List<ModelInfo>>(json);
+                
+                // Verify deserialization
+                if (models != null && models.Count() > 0)
+                {
+                    models[0].LogTransform();
+                }
+                
+                return models;
+            }
+            catch (System.Exception ex)
+            {
+                Debug.LogError($"Failed to parse model data: {ex.Message}\n{ex.StackTrace}");
+                return null;
+            }
         }
     }
 
-    // Helper method to parse the JSON array
-    private List<ModelInfo> ParseModelList(string jsonArray)
+    [Serializable]
+    private class ModelListWrapper
     {
-        // Add square brackets to make it a proper array if needed
-        if (!jsonArray.StartsWith("["))
-        {
-            jsonArray = $"[{jsonArray}]";
-        }
-
-        // Fix 2: Use JsonHelper wrapper for arrays
-        return JsonHelper.FromJson<ModelInfo>(jsonArray).ToList();
+        public List<ModelInfo> models; // Changed to array for JsonUtility
     }
 
-    // Add this helper class to handle JSON arrays
-    public static class JsonHelper
-    {
-        public static T[] FromJson<T>(string json)
-        {
-            Wrapper<T> wrapper = JsonUtility.FromJson<Wrapper<T>>($"{{\"Items\":{json}}}");
-            return wrapper.Items;
-        }
-
-        [System.Serializable]
-        private class Wrapper<T>
-        {
-            public T[] Items;
-        }
-    }
     private async Task<GameObject> LoadGLBModelFromUrlAsync(string modelUrl, string modelName)
     {
-        // Create a temporary file path
         string tempFilePath = Path.Combine(Application.temporaryCachePath, $"{modelName}.glb");
 
         try
         {
-            // First download the file
             using (UnityWebRequest request = UnityWebRequest.Get(modelUrl))
             {
                 request.downloadHandler = new DownloadHandlerFile(tempFilePath);
@@ -319,7 +268,6 @@ public class LoadModels : MonoBehaviour
                 }
             }
 
-            // Now load the downloaded file
             var gltf = new GltfImport();
             bool success = await gltf.Load(tempFilePath);
 
@@ -337,17 +285,12 @@ public class LoadModels : MonoBehaviour
         }
         finally
         {
-            // Clean up the temporary file
-            if (File.Exists(tempFilePath))
-            {
-                File.Delete(tempFilePath);
-            }
+            if (File.Exists(tempFilePath)) File.Delete(tempFilePath);
         }
     }
 
-    // Helper classes for JSON parsing
-    [System.Serializable]
-    private class ModelInfo
+    [Serializable]
+    public class ModelInfo
     {
         public string id;
         public string name;
@@ -355,11 +298,64 @@ public class LoadModels : MonoBehaviour
         public string lastUpdated;
         public string thumbnail;
         public string modelPath;
-    }
+        public float[][] transform;
 
-    [System.Serializable]
-    private class ModelListResponse
-    {
-        public List<ModelInfo> models;
+        public string TooString(){
+            string res = "";
+            for(int i=0; i<transform.Length; i++){
+                for(int j=0; j<transform.Length; j++){
+                    res += transform[i][j];
+                }
+                res += " / ";
+            }
+            return res;
+        }
+
+        public void LogTransform()
+        {
+            if (transform == null)
+            {
+                Debug.LogError("Transform is null!");
+                return;
+            }
+
+            Debug.Log($"Transform matrix for {name}:");
+            for (int i = 0; i < 4; i++)
+            {
+                Debug.Log($"{transform[i][0]}, {transform[i][1]}, {transform[i][2]}, {transform[i][3]}");
+            }
+        }
     }
+   
+    // public async Task UpdateModelTransform(GameObject gameObject)
+    // {
+    //     string url = $"{serverUrl}/api/models/{modelIdLookup[gameObject]}/transform";
+    //     Debug.Log(url);
+        
+    //     // Convert matrix to JSON
+    //     string jsonMatrix = MatrixUtils.ConvertMatrixToJson(gameObject.transform.localToWorldMatrix);
+        
+    //     // Create form data
+    //     WWWForm form = new WWWForm();
+    //     form.AddField("transform", jsonMatrix);
+        
+    //     using (UnityWebRequest request = UnityWebRequest.Post(url, form))
+    //     {
+    //         var operation = request.SendWebRequest();
+            
+    //         while (!operation.isDone)
+    //             await Task.Yield();
+
+    //         if (request.result != UnityWebRequest.Result.Success)
+    //         {
+    //             Debug.LogError($"Transform update failed: {request.error}");
+    //             Debug.LogError($"Response: {request.downloadHandler.text}");
+    //         }
+    //         else
+    //         {
+    //             Debug.Log("Transform updated successfully");
+    //         }
+    //     }
+    // }
+
 }
