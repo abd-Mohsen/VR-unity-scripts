@@ -40,17 +40,33 @@ public class LoadModels : MonoBehaviour
             return;
         }
 
-        StartServer();
+        Application.targetFrameRate = 30;
+
+        //StartServer();
     }
 
     void Update()
     {
+        HandleKeyboardClick();
+
         if (selectedObject != null)
         {
-            selectedObject.transform.Translate(movementDirection * moveSpeed);
+            // for moving camera
+            Vector3 worldDirection = Camera.main.transform.TransformDirection(movementDirection);
+            selectedObject.transform.Translate(worldDirection * moveSpeed, Space.World);
+
+            //selectedObject.transform.Translate(movementDirection * moveSpeed, Space.World); //fixed camera
+
+            if (movementDirection != Vector3.zero)
+            {
+                // Now the movement has occurred, so we send the updated matrix
+                _ = UpdateModelTransform(selectedObject); // Fire and forget
+            }
         }
+
         movementDirection = Vector3.zero;
     }
+
 
     private void StartServer()
     {
@@ -111,6 +127,59 @@ public class LoadModels : MonoBehaviour
         context.Response.OutputStream.Close();
     }
 
+    async private void HandleKeyboardClick()
+    {
+        bool updated = false;
+
+        if (Input.GetKeyDown(KeyCode.A))
+        {
+            movementDirection = Vector3.left;
+            updated = true;
+        }
+        else if (Input.GetKeyDown(KeyCode.D))
+        {
+            movementDirection = Vector3.right;
+            updated = true;
+        }
+        else if (Input.GetKeyDown(KeyCode.W))
+        {
+            movementDirection = Vector3.up;
+            updated = true;
+        }
+        else if (Input.GetKeyDown(KeyCode.S))
+        {
+            movementDirection = Vector3.down;
+            updated = true;
+        }
+        else if (Input.GetKeyDown(KeyCode.Q))
+        {
+            selectedObject.transform.Rotate(0, -90f, 0, Space.World);
+            updated = true;
+        }
+        else if (Input.GetKeyDown(KeyCode.E))
+        {
+            selectedObject.transform.Rotate(0, 90f, 0, Space.World);
+            updated = true;
+        }
+        else if (Input.GetKeyDown(KeyCode.Z))
+        {
+            selectedObject.transform.localScale *= 2f;
+            updated = true;
+        }
+        else if (Input.GetKeyDown(KeyCode.X))
+        {
+            selectedObject.transform.localScale *= 0.5f;
+            updated = true;
+        }
+
+        // If any transform change happened, upload the new transform to server
+        if (updated)
+        {
+            await UpdateModelTransform(selectedObject);
+        }
+    }
+
+
     private void OnDestroy()
     {
         // Stop the server when the game ends
@@ -159,11 +228,27 @@ public class LoadModels : MonoBehaviour
                 Debug.Log(modelInfo.TooString());
                 Matrix4x4 transformMatrix = ParseTransform(modelInfo.transform);
 
-                // Set the model transform matrix
+                Matrix4x4 rawMatrix = transformMatrix;
+                Matrix4x4 matrix = rawMatrix.transpose; // Fix row-major to column-major
+
+                // Extract TRS components
+                Vector3 position = matrix.GetColumn(3);
+                Vector3 scale = new Vector3(
+                    matrix.GetColumn(0).magnitude,
+                    matrix.GetColumn(1).magnitude,
+                    matrix.GetColumn(2).magnitude
+                );
+
+                Vector3 xAxis = matrix.GetColumn(0).normalized;
+                Vector3 yAxis = matrix.GetColumn(1).normalized;
+                Vector3 zAxis = matrix.GetColumn(2).normalized;
+
+                Quaternion rotation = Quaternion.LookRotation(zAxis, yAxis);
+
                 Transform modelTransform = model.transform;
-                modelTransform.position = transformMatrix.GetPosition();
-                modelTransform.rotation = transformMatrix.rotation;
-                modelTransform.localScale = transformMatrix.lossyScale;
+                modelTransform.position = position;
+                modelTransform.rotation = rotation;
+                modelTransform.localScale = scale;
             }
         }
 
@@ -173,6 +258,11 @@ public class LoadModels : MonoBehaviour
     private async Task<(GameObject, ModelInfo)> LoadModelWithInfo(ModelInfo modelInfo)
     {
         GameObject model = await LoadGLBModelFromUrlAsync(modelInfo.modelPath, modelInfo.name);
+        if (model != null)
+        {
+            model.transform.SetParent(this.transform); // Ensure parenting
+            model.transform.localPosition = Vector3.zero;
+        }
         return (model, modelInfo);
     }
 
@@ -326,8 +416,8 @@ public class LoadModels : MonoBehaviour
             }
         }
     }
-   
-    // public async Task UpdateModelTransform(GameObject gameObject)
+
+        // public async Task UpdateModelTransform(GameObject gameObject)
     // {
     //     string url = $"{serverUrl}/api/models/{modelIdLookup[gameObject]}/transform";
     //     Debug.Log(url);
@@ -346,16 +436,65 @@ public class LoadModels : MonoBehaviour
     //         while (!operation.isDone)
     //             await Task.Yield();
 
-    //         if (request.result != UnityWebRequest.Result.Success)
-    //         {
-    //             Debug.LogError($"Transform update failed: {request.error}");
-    //             Debug.LogError($"Response: {request.downloadHandler.text}");
-    //         }
-    //         else
-    //         {
-    //             Debug.Log("Transform updated successfully");
-    //         }
-    //     }
-    // }
+   
+    public async Task UpdateModelTransform(GameObject gameObject)
+    {
+        if (!modelIdLookup.TryGetValue(gameObject, out string modelId))
+        {
+            Debug.LogError($"GameObject {gameObject.name} not found in model lookup");
+            return;
+        }
 
+        string url = $"{serverUrl}/api/models/{modelId}/transform";
+        
+        try
+        {
+            string jsonMatrix = ConvertMatrixToJson(gameObject.transform.localToWorldMatrix);
+            Debug.Log($"Sending transform update: {jsonMatrix}");
+
+            WWWForm form = new WWWForm();
+            form.AddField("transform", jsonMatrix);
+
+            using (UnityWebRequest request = UnityWebRequest.Post(url, form))
+            {
+                var operation = request.SendWebRequest();
+                
+                while (!operation.isDone)
+                    await Task.Yield();
+
+                if (request.result != UnityWebRequest.Result.Success)
+                {
+                    Debug.LogError($"Transform update failed: {request.error}");
+                    Debug.LogError($"Response: {request.downloadHandler.text}");
+                }
+                else
+                {
+                    Debug.Log($"Transform updated successfully. Response: {request.downloadHandler.text}");
+                }
+            }
+        }
+        catch (Exception ex)
+        {
+            Debug.LogError($"Exception during transform update: {ex.Message}");
+        }
+    }
+    private string ConvertMatrixToJson(Matrix4x4 matrix)
+    {
+        // Convert Matrix4x4 to float[4][4]
+        float[][] matrixArray = new float[4][];
+        for (int i = 0; i < 4; i++)
+        {
+            matrixArray[i] = new float[4];
+            for (int j = 0; j < 4; j++)
+            {
+                matrixArray[i][j] = matrix[i, j];
+            }
+        }
+
+        // Serialize JUST the array without wrapper
+        return JsonConvert.SerializeObject(matrixArray);
+    }
+
+
+    
 }
