@@ -12,7 +12,7 @@ using System.Linq;
 using Newtonsoft.Json;
 //using SimpleJSON;
 //"com.unity.nuget.newtonsoft-json": "3.0.2",
-public class LoadModels : MonoBehaviour
+public class LoadModelsController : MonoBehaviour
 {
     public string modelsFolderPath = "C:\\Users\\ABD\\Desktop\\models";
 
@@ -22,6 +22,7 @@ public class LoadModels : MonoBehaviour
     private Vector3 movementDirection = Vector3.zero; // Direction to move the object
     public float moveSpeed = 0.5f; // Movement speed
 
+    private List<GameObject> loadedModels = new List<GameObject>();
     private Dictionary<GameObject, string> modelIdLookup = new Dictionary<GameObject, string>();
 
     async void Start()
@@ -66,66 +67,6 @@ public class LoadModels : MonoBehaviour
         }
 
         movementDirection = Vector3.zero;
-    }
-
-
-    private void StartServer()
-    {
-        httpListener = new HttpListener();
-        httpListener.Prefixes.Add("http://127.0.0.1:9000/");
-        httpListener.Start();
-
-        serverThread = new Thread(() =>
-        {
-            while (httpListener.IsListening)
-            {
-                try
-                {
-                    var context = httpListener.GetContext();
-                    HandleRequest(context);
-                }
-                catch (Exception ex)
-                {
-                    Debug.LogError($"Server error: {ex.Message}");
-                }
-            }
-        });
-        serverThread.IsBackground = true;
-        serverThread.Start();
-        Debug.Log("HTTP server started on http://127.0.0.1:9000/");
-    }
-
-    async private void HandleRequest(HttpListenerContext context)
-    {
-        // Parse the command from the URL
-        string command = context.Request.RawUrl?.Trim('/').ToLower();
-
-        switch (command)
-        {
-            case "left":
-                movementDirection = Vector3.left;
-                break;
-            case "right":
-                movementDirection = Vector3.right;
-                break;
-            case "up":
-                movementDirection = Vector3.up;
-                break;
-            case "down":
-                movementDirection = Vector3.down;
-                break;
-            default:
-                Debug.LogWarning($"Unknown command: {command}");
-                break;
-        }
-        //await UpdateModelTransform(selectedObject);
-
-        // Respond to the client
-        string responseString = $"Command '{command}' executed!";
-        byte[] buffer = System.Text.Encoding.UTF8.GetBytes(responseString);
-        context.Response.ContentLength64 = buffer.Length;
-        context.Response.OutputStream.Write(buffer, 0, buffer.Length);
-        context.Response.OutputStream.Close();
     }
 
     private void HandleMouseClick()
@@ -236,8 +177,10 @@ public class LoadModels : MonoBehaviour
     private string serverUrl = "http://127.0.0.1:8000";
     private string modelsEndpoint = "/api/models/search";
 
-    private async Task LoadModelsFromServer()
+    public async Task LoadModelsFromServer()
     {
+        // Clear previously loaded models before loading new ones
+        
         List<ModelInfo> modelList = await FetchModelList();
     
         if (modelList == null || modelList.Count == 0)
@@ -266,12 +209,16 @@ public class LoadModels : MonoBehaviour
 
         var loadedModels = await Task.WhenAll(loadTasks);
 
+        ClearLoadedModels();
         foreach (var (model, modelInfo) in loadedModels)
         {
             if (model != null)
             {
+                // Add to our tracking list
+                this.loadedModels.Add(model);
                 modelIdLookup[model] = modelInfo.id;
                 Debug.Log(modelInfo.TooString());
+                
                 Matrix4x4 transformMatrix = ParseTransform(modelInfo.transform);
 
                 Matrix4x4 rawMatrix = transformMatrix;
@@ -327,6 +274,30 @@ public class LoadModels : MonoBehaviour
         return (model, modelInfo);
     }
 
+    // Public method to clear all loaded models
+    public void ClearLoadedModels()
+    {
+        Debug.Log($"Clearing {loadedModels.Count} loaded models");
+        
+        foreach (GameObject model in loadedModels)
+        {
+            if (model != null)
+            {
+                // Remove from lookup dictionary
+                if (modelIdLookup.ContainsKey(model))
+                {
+                    modelIdLookup.Remove(model);
+                }
+                
+                // Destroy the GameObject
+                Destroy(model);
+            }
+        }
+        
+        loadedModels.Clear();
+        Debug.Log("All models cleared successfully");
+    }
+    
     private Matrix4x4 ParseTransform(float[][] matrixData)
     {
         if (matrixData == null)
