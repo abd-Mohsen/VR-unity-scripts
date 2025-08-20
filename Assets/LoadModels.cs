@@ -239,16 +239,27 @@ public class LoadModels : MonoBehaviour
     private async Task LoadModelsFromServer()
     {
         List<ModelInfo> modelList = await FetchModelList();
-       
+    
         if (modelList == null || modelList.Count == 0)
         {
             Debug.LogWarning("No models found on the server!");
             return;
         }
 
+        // Filter out hidden models
+        var visibleModels = modelList.Where(model => !model.hidden).ToList();
+        
+        if (visibleModels.Count == 0)
+        {
+            Debug.LogWarning("No visible models found on the server!");
+            return;
+        }
+
+        Debug.Log($"Loading {visibleModels.Count} visible models out of {modelList.Count} total models");
+
         List<Task<(GameObject, ModelInfo)>> loadTasks = new List<Task<(GameObject, ModelInfo)>>();
 
-        foreach (ModelInfo modelInfo in modelList)
+        foreach (ModelInfo modelInfo in visibleModels) // Use filtered list
         {
             loadTasks.Add(LoadModelWithInfo(modelInfo));
         }
@@ -287,7 +298,7 @@ public class LoadModels : MonoBehaviour
             }
         }
 
-        Debug.Log($"Successfully loaded {loadedModels.Length} models from server!");
+        Debug.Log($"Successfully loaded {loadedModels.Length} models from server! (Filtered out {modelList.Count - visibleModels.Count} hidden models)");
     }
 
     private async Task<(GameObject, ModelInfo)> LoadModelWithInfo(ModelInfo modelInfo)
@@ -439,6 +450,7 @@ public class LoadModels : MonoBehaviour
         public string thumbnail;
         public string modelPath;
         public float[][] transform;
+        public bool hidden;
 
         public string TooString(){
             string res = "";
