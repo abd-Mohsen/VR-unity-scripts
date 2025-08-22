@@ -10,12 +10,12 @@ using GLTFast;
 using System.Text.Json;
 using System.Linq;
 using Newtonsoft.Json;
+using UnityEditor.Build.Content;
 //using SimpleJSON;
 //"com.unity.nuget.newtonsoft-json": "3.0.2",
 public class LoadModelsController : MonoBehaviour
 {
-    public string modelsFolderPath = "C:\\Users\\ABD\\Desktop\\models";
-
+    private String sceneID = "fbb72e89-0f35-4418-aa62-d5a99550732a";
     private GameObject selectedObject; // The object to control
     private HttpListener httpListener; // HTTP server
     private Thread serverThread; // Thread for the server
@@ -322,7 +322,7 @@ public class LoadModelsController : MonoBehaviour
 
     private async Task<List<ModelInfo>> FetchModelList()
     {
-        string url = $"{serverUrl}{modelsEndpoint}";
+        string url = $"{serverUrl}{modelsEndpoint}?scene_id={sceneID}";
         using (UnityWebRequest request = UnityWebRequest.Get(url))
         {
             var operation = request.SendWebRequest();
@@ -487,6 +487,7 @@ public class LoadModelsController : MonoBehaviour
 
             WWWForm form = new WWWForm();
             form.AddField("transform", jsonMatrix);
+            form.AddField("scene_id", sceneID);
 
             using (UnityWebRequest request = UnityWebRequest.Post(url, form))
             {
